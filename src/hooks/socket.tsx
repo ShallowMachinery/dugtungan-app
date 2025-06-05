@@ -53,9 +53,13 @@ export const useSocket = (): UseSocketReturn => {
   });
 
   useEffect(() => {
-    const serverUrl = window.location.hostname === 'localhost' 
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+
+    const serverUrl = isLocalhost
       ? 'http://localhost:3001'
-      : `http://${window.location.hostname}:3001`;
+      : window.location.hostname.endsWith('.local') || window.location.hostname.startsWith('192.') || window.location.hostname.startsWith('10.')
+        ? `http://${window.location.hostname}:3001`
+        : 'https://dugtungan.onrender.com';
 
     const newSocket = io(serverUrl);
     setSocket(newSocket);
