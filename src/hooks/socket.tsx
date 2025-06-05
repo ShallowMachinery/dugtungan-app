@@ -4,6 +4,14 @@ import { Player } from '../components/player/player';
 import { Difficulty, GameMode } from '../components/gameInit';
 import { Room } from '../components/room/room';
 
+interface PlayedWord {
+  word: string;
+  definitions: string[];
+  pos: string;
+  synonyms: string[];
+  
+}
+
 interface UseSocketReturn {
   socket: Socket | null;
   currentSyllable: string;
@@ -15,6 +23,7 @@ interface UseSocketReturn {
   availableRooms: Room[];
   onlinePlayers: Player[];
   currentPlayerId: string | null;
+  playedWords: PlayedWord[];
   snackbar: {
     open: boolean;
     message: string;
@@ -42,6 +51,7 @@ export const useSocket = (): UseSocketReturn => {
   const [availableRooms, setAvailableRooms] = useState<Room[]>([]);
   const [onlinePlayers, setOnlinePlayers] = useState<Player[]>([]);
   const [currentPlayerId, setCurrentPlayerId] = useState<string | null>(null);
+  const [playedWords, setPlayedWords] = useState<PlayedWord[]>([]);
   const [snackbar, setSnackbar] = useState<{
     open: boolean;
     message: string;
@@ -108,15 +118,20 @@ export const useSocket = (): UseSocketReturn => {
       setCurrentPlayerId(data.currentPlayerId);
     });
 
-    newSocket.on('wordAccepted', (data: { newSyllable: string; timeLeft: number; players: Player[]; currentPlayerId: string }) => {
-      console.log('\n=== Word Accepted Event ===');
-      console.log('Received data:', data);
-      console.log('Current socket ID:', newSocket.id);
-      console.log('Turn changed to:', data.currentPlayerId);
+    newSocket.on('wordAccepted', (data: {
+      newSyllable: string;
+      timeLeft: number;
+      players: Player[];
+      currentPlayerId: string;
+      playedWords: PlayedWord[];
+    }) => {
+      console.log('Word accepted data:', data);
       setCurrentSyllable(data.newSyllable);
       setTimeLeft(data.timeLeft);
       setPlayers(data.players);
       setCurrentPlayerId(data.currentPlayerId);
+      setPlayedWords(data.playedWords);
+      console.log('Updated played words:', data.playedWords);
       
       // Update online players with new scores
       const updatedOnlinePlayers = onlinePlayers.map(player => {
@@ -316,6 +331,7 @@ export const useSocket = (): UseSocketReturn => {
     availableRooms,
     onlinePlayers,
     currentPlayerId,
+    playedWords,
     snackbar,
     setSnackbar,
     createRoom,

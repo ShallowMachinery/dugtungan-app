@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Box,
   Stack,
@@ -26,6 +26,18 @@ import {
 import { Difficulty, GameMode } from './gameInit';
 import { useSocket } from '../hooks/socket';
 
+interface PlayedWord {
+  word: string;
+  definitions: {
+    pos: string;
+    definition: string[];
+  }[];
+  synonyms: string[];
+  currentSyllable: string;
+  playerId: string;
+  playedBy: string;
+}
+
 const Game: React.FC = () => {
   const [inputWord, setInputWord] = useState<string>('');
   const [playerName, setPlayerName] = useState<string>('');
@@ -34,6 +46,9 @@ const Game: React.FC = () => {
   const [gameMode, setGameMode] = useState<GameMode>('pagsabog');
   const [isNameSet, setIsNameSet] = useState<boolean>(false);
   const [showRoomList, setShowRoomList] = useState<boolean>(false);
+  const [playedWords, setPlayedWords] = useState<PlayedWord[]>([]);
+  const [currentPlayerInput, setCurrentPlayerInput] = useState<string>('');
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const {
     socket,
@@ -110,17 +125,82 @@ const Game: React.FC = () => {
     }
   }, [socket]);
 
+  useEffect(() => {
+    if (socket) {
+      socket.on('wordAccepted', (data) => {
+        setPlayedWords(data.playedWords); // 🎯 This updates the list with the latest from the server
+      });
+
+      socket.on('clearInput', () => {
+        setInputWord('');
+      });
+
+      // Optional: cleanup on component unmount
+      return () => {
+        socket.off('wordAccepted');
+        socket.off('clearInput');
+      };
+    }
+  }, [socket]);
+
+  // Add effect to handle input changes
+  useEffect(() => {
+    if (socket) {
+      socket.on('playerInputUpdate', (data: { playerId: string; input: string }) => {
+        if (data.playerId === currentPlayerId) {
+          setCurrentPlayerInput(data.input);
+        }
+      });
+
+      return () => {
+        socket.off('playerInputUpdate');
+      };
+    }
+  }, [socket, currentPlayerId]);
+
+  // Add effect to handle keyboard focus
+  useEffect(() => {
+    if (socket) {
+      socket.on('keyboardFocus', (data: { currentPlayerId: string }) => {
+        if (data.currentPlayerId === socket.id && inputRef.current) {
+          inputRef.current.focus();
+        }
+      });
+
+      return () => {
+        socket.off('keyboardFocus');
+      };
+    }
+  }, [socket]);
+
+  // Update input change handler
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newValue = e.target.value;
+    setInputWord(newValue);
+    if (socket && roomId && currentPlayerId === socket.id) {
+      socket.emit('inputChange', roomId, newValue);
+    }
+  };
+
+  useEffect(() => {
+    if (currentPlayerId === socket?.id) {
+      console.log('my turn hehe :D');
+      console.log(inputRef.current);
+      inputRef.current?.focus();
+    }
+  }, [currentPlayerId, socket?.id]);
+
   return (
     <Container maxWidth="md" sx={{ py: 4 }}>
       <Stack spacing={4}>
         <Typography variant="h3" component="h1" align="center">
           Dugtungan
         </Typography>
-        
+
         <Typography variant="subtitle1" align="center" color="text.secondary" sx={{ mb: 2 }}>
           Players Online: {onlinePlayers.length}
         </Typography>
-        
+
         {!isNameSet ? (
           <Stack spacing={3}>
             <Typography variant="h5" align="center" gutterBottom>
@@ -135,9 +215,9 @@ const Game: React.FC = () => {
               variant="outlined"
               autoFocus
             />
-            <Button 
-              variant="contained" 
-              color="primary" 
+            <Button
+              variant="contained"
+              color="primary"
               onClick={handleNameSubmit}
               fullWidth
               disabled={!playerName.trim()}
@@ -235,19 +315,19 @@ const Game: React.FC = () => {
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                                 {room.ownerName}
-                                <Chip 
-                                  label="Host" 
-                                  size="small" 
-                                  color="primary" 
+                                <Chip
+                                  label="Host"
+                                  size="small"
+                                  color="primary"
                                   variant="outlined"
                                   sx={{ height: '20px', fontSize: '0.7rem' }}
                                 />
                               </Box>
                               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                                 {room.isActive && (
-                                  <Typography 
-                                    variant="caption" 
-                                    sx={{ 
+                                  <Typography
+                                    variant="caption"
+                                    sx={{
                                       bgcolor: 'error.main',
                                       color: 'white',
                                       px: 1,
@@ -334,15 +414,44 @@ const Game: React.FC = () => {
         ) : (
           <Stack spacing={4}>
             <Box>
-              <Typography variant="h5" gutterBottom>
-                Current Syllable: <Typography component="span" color="primary.main">{currentSyllable}</Typography>
-              </Typography>
-              <Typography variant="subtitle1" color="text.secondary" gutterBottom>
+              <Typography variant="subtitle1" color="text.secondary" gutterBottom textAlign="center">
                 Difficulty: {difficulty.charAt(0).toUpperCase() + difficulty.slice(1)}
               </Typography>
-              <LinearProgress 
-                variant="determinate" 
-                value={(timeLeft / 10) * 100} 
+              <Typography variant="h5" gutterBottom>
+                <Typography variant="h5" component="span" color="primary.main" textAlign="center">{currentSyllable}</Typography>
+              </Typography>
+
+            </Box>
+
+            <Stack direction="row" spacing={2}>
+              <TextField
+                inputRef={inputRef}
+                fullWidth
+                value={currentPlayerId === socket?.id ? inputWord : currentPlayerInput}
+                onChange={handleInputChange}
+                onKeyPress={handleKeyPress}
+                placeholder={currentPlayerId === socket?.id ? "Type a word..." : `${players.find(p => p.id === currentPlayerId)?.name} is thinking...`}
+                variant="outlined"
+                disabled={currentPlayerId !== socket?.id}
+              />
+              <Button
+                variant="contained"
+                color="success"
+                onClick={() => {
+                  handleWordSubmit(roomId, inputWord);
+                  setInputWord('');
+                  inputRef.current?.focus();
+                }}
+                disabled={currentPlayerId !== socket?.id}
+              >
+                Submit
+              </Button>
+            </Stack>
+
+            <Box>
+              <LinearProgress
+                variant="determinate"
+                value={(timeLeft / 10) * 100}
                 color={timeLeft < 3 ? 'error' : 'primary'}
                 sx={{ height: 10, borderRadius: 5 }}
               />
@@ -350,10 +459,10 @@ const Game: React.FC = () => {
                 Time left: {timeLeft}s
               </Typography>
               {currentPlayerId && (
-                <Typography 
-                  variant="h6" 
-                  color="primary" 
-                  sx={{ 
+                <Typography
+                  variant="h6"
+                  color="primary"
+                  sx={{
                     mt: 2,
                     p: 1,
                     bgcolor: 'primary.light',
@@ -367,32 +476,150 @@ const Game: React.FC = () => {
               )}
             </Box>
 
-            <Stack direction="row" spacing={2}>
-              <TextField
-                fullWidth
-                value={inputWord}
-                onChange={(e) => setInputWord(e.target.value)}
-                onKeyPress={handleKeyPress}
-                placeholder={currentPlayerId === socket?.id ? "Type a word..." : "Waiting for your turn..."}
-                variant="outlined"
-                disabled={currentPlayerId !== socket?.id}
-              />
-              <Button 
-                variant="contained" 
-                color="success" 
-                onClick={() => {
-                  handleWordSubmit(roomId, inputWord);
-                  setInputWord('');
-                }}
-                disabled={currentPlayerId !== socket?.id}
-              >
-                Submit
-              </Button>
-            </Stack>
+            {/* Room Players Section */}
+            <Paper sx={{ p: 2, mb: 2 }}>
+              <Typography variant="h6" gutterBottom>
+                Room Players
+              </Typography>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                {players.map((player) => (
+                  <Box
+                    key={player.id}
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      p: 1,
+                      bgcolor: player.id === currentPlayerId ? 'action.selected' : 'transparent',
+                      borderRadius: 1,
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Typography>{player.name}</Typography>
+                      {player.id === roomId && (
+                        <Chip
+                          label="Host"
+                          size="small"
+                          color="primary"
+                          variant="outlined"
+                          sx={{ fontSize: '0.7rem' }}
+                        />
+                      )}
+                    </Box>
+                    <Typography>Score: {player.score}</Typography>
+                  </Box>
+                ))}
+              </Box>
+            </Paper>
 
-            <Button 
-              variant="outlined" 
-              color="error" 
+            {/* Played Words Section */}
+            <Paper sx={{ p: 2, mb: 2 }}>
+              <Typography variant="h6" gutterBottom>
+                Played Words
+              </Typography>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: '300px', overflow: 'auto' }}>
+                {playedWords.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 2 }}>
+                    No words played yet
+                  </Typography>
+                ) : (
+                  playedWords.map((wordInfo, index) => (
+                    <Box key={index} sx={{ borderBottom: '1px solid #eee', pb: 1 }}>
+                      <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                        {wordInfo.playedBy}
+                      </Typography>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                        <Typography variant="subtitle1" color="primary">
+                          {
+                            (() => {
+                              const word = wordInfo.word;
+                              const syllable = wordInfo.currentSyllable;
+                              const index = word.toLowerCase().indexOf(syllable.toLowerCase());
+
+                              if (index === -1) return word;
+
+                              const before = word.slice(0, index);
+                              const match = word.slice(index, index + syllable.length);
+                              const after = word.slice(index + syllable.length);
+
+                              return (
+                                <>
+                                  {before}
+                                  <Box component="span" sx={{ fontWeight: 'bold', color: 'error.main' }}>
+                                    {match}
+                                  </Box>
+                                  {after}
+                                </>
+                              );
+                            })()
+                          }
+                        </Typography>
+                        {wordInfo.definitions.length > 0 && (wordInfo.definitions.map((definition, index) => (
+                          <Typography
+                            key={index}
+                            component="span"
+                            variant="caption"
+                            sx={{
+                              display: 'inline-block',
+                              mr: 1,
+                              color: 'text.secondary',
+                              fontStyle: 'italic',
+                              '&:not(:last-child)::after': {
+                                content: '","',
+                                mr: 0.5
+                              }
+                            }}
+                          >
+                            {definition.pos}
+                          </Typography>
+                        )))}
+                      </Box>
+                      {wordInfo.definitions.length > 0 && (() => {
+                        let count = 0;
+                        return wordInfo.definitions.flatMap((entry) =>
+                          entry.definition.map((def: string) => {
+                            count++;
+                            return (
+                              <Typography key={def + count} variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                                {count}. {def}
+                              </Typography>
+                            );
+                          })
+                        );
+                      })()}
+                      {wordInfo.synonyms.length > 0 && (
+                        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                            Synonyms:
+                          </Typography>
+                          {wordInfo.synonyms.map((synonym, idx) => (
+                            <Typography
+                              key={idx}
+                              component="span"
+                              variant="caption"
+                              sx={{
+                                display: 'inline-block',
+                                color: 'text.secondary',
+                                '&:not(:last-child)::after': {
+                                  content: '","',
+                                  mr: 0.5
+                                }
+                              }}
+                            >
+                              {synonym}
+                            </Typography>
+                          ))}
+                        </Box>
+                      )}
+                    </Box>
+                  ))
+                )}
+              </Box>
+            </Paper>
+
+            <Button
+              variant="outlined"
+              color="error"
               onClick={() => handleLeaveRoom(roomId)}
               fullWidth
             >
@@ -401,7 +628,7 @@ const Game: React.FC = () => {
           </Stack>
         )}
 
-        {roomId && (
+        {roomId && !isGameActive && (
           <Paper sx={{ mt: 4, p: 2 }}>
             <Typography variant="h6" gutterBottom>
               Room Players
@@ -414,10 +641,10 @@ const Game: React.FC = () => {
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                         {player.name}
                         {player.isOwner && (
-                          <Chip 
-                            label="Host" 
-                            size="small" 
-                            color="primary" 
+                          <Chip
+                            label="Host"
+                            size="small"
+                            color="primary"
                             variant="outlined"
                             sx={{ height: '20px', fontSize: '0.7rem' }}
                           />
@@ -465,12 +692,12 @@ const Game: React.FC = () => {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setIsJoinDialogOpen(false)}>Cancel</Button>
-          <Button 
+          <Button
             onClick={() => {
               setIsJoinDialogOpen(false);
               handleJoinRoom(roomId);
-            }} 
-            variant="contained" 
+            }}
+            variant="contained"
             color="primary"
             disabled={!roomId || !playerName}
           >
@@ -484,8 +711,8 @@ const Game: React.FC = () => {
         autoHideDuration={5000}
         onClose={() => setSnackbar({ ...snackbar, open: false })}
       >
-        <Alert 
-          onClose={() => setSnackbar({ ...snackbar, open: false })} 
+        <Alert
+          onClose={() => setSnackbar({ ...snackbar, open: false })}
           severity={snackbar.severity}
         >
           {snackbar.message}

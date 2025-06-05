@@ -2,7 +2,7 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
-import { GameRoom, Player, rooms, onlinePlayers } from './gameInit';
+import { GameRoom, Player, rooms, onlinePlayers, promptDifficulty, dictionary, PlayedWord } from './gameInit';
 import { initializeDictionaryMaps, validateWord } from './utils/validator';
 import { generateNewSyllable } from './utils/roomFunctions';
 
@@ -100,6 +100,12 @@ function moveToNextTurn(room: GameRoom) {
     currentPlayerId: room.currentPlayerId,
     timeLeft: room.timeLeft,
     currentSyllable: room.currentSyllable
+  });
+
+  // Emit signal to clear input for all players
+  io.to(room.id).emit('clearInput');
+  io.to(room.id).emit('keyboardFocus', {
+    currentPlayerId: room.currentPlayerId
   });
 
   // Start new timer for next player
@@ -219,7 +225,8 @@ io.on('connection', (socket) => {
         isActive: false,
         timer: null,
         difficulty: 'easy',
-        currentPlayerId: null
+        currentPlayerId: null,
+        playedWords: []
       };
       rooms.set(roomId, room);
       console.log('Room created:', roomId);
@@ -341,7 +348,7 @@ io.on('connection', (socket) => {
     
     const room = rooms.get(roomId);
     if (room && room.isActive) {
-      console.log('Room found and game is active');
+      console.log('Room found and game is active'); 
       console.log('Current syllable:', room.currentSyllable);
       console.log('Current turn:', room.currentPlayerId);
       
@@ -366,6 +373,20 @@ io.on('connection', (socket) => {
           player.score += 1;
           console.log('New player score:', player.score);
           
+          // Get word information from dictionary
+          const wordInfo = dictionary.find((entry: { word: string }) => entry.word.toLowerCase() === word.toLowerCase());
+          
+          // Add word with its information to played words list
+          const playedWord: PlayedWord = {
+            word,
+            currentSyllable: room.currentSyllable,
+            definitions: wordInfo?.definitions || [],
+            synonyms: wordInfo?.synonyms || [],
+            playerId: socket.id,
+            playedBy: player.name
+          };
+          room.playedWords.push(playedWord);
+          
           // Update online player score as well
           if (onlinePlayers.has(socket.id)) {
             onlinePlayers.get(socket.id)!.score = player.score;
@@ -389,10 +410,12 @@ io.on('connection', (socket) => {
           
           io.to(roomId).emit('wordAccepted', {
             playerId: socket.id,
+            playedBy: player.name,
             newSyllable: room.currentSyllable,
             timeLeft: room.timeLeft,
             players: Array.from(room.players.values()),
-            currentPlayerId: room.currentPlayerId
+            currentPlayerId: room.currentPlayerId,
+            playedWords: room.playedWords
           });
           
           // Update online players list
@@ -411,6 +434,18 @@ io.on('connection', (socket) => {
       }
     } else {
       console.log('Room not found or game not active');
+    }
+  });
+
+  // Add handler for input changes
+  socket.on('inputChange', (roomId: string, input: string) => {
+    const room = rooms.get(roomId);
+    if (room && room.isActive && socket.id === room.currentPlayerId) {
+      // Broadcast the input to all other players in the room
+      socket.to(roomId).emit('playerInputUpdate', {
+        playerId: socket.id,
+        input: input
+      });
     }
   });
 
