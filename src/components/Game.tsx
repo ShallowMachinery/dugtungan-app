@@ -42,12 +42,17 @@ const Game: React.FC = () => {
   const [inputWord, setInputWord] = useState<string>('');
   const [playerName, setPlayerName] = useState<string>('');
   const [isJoinDialogOpen, setIsJoinDialogOpen] = useState<boolean>(false);
-  const [difficulty, setDifficulty] = useState<Difficulty>('easy');
   const [gameMode, setGameMode] = useState<GameMode>('pagsabog');
   const [isNameSet, setIsNameSet] = useState<boolean>(false);
   const [showRoomList, setShowRoomList] = useState<boolean>(false);
   const [playedWords, setPlayedWords] = useState<PlayedWord[]>([]);
   const [currentPlayerInput, setCurrentPlayerInput] = useState<string>('');
+  const [isGameOverDialogOpen, setIsGameOverDialogOpen] = useState<boolean>(false);
+  const [gameOverData, setGameOverData] = useState<{
+    winner: { id: string; name: string; score: number } | null;
+    players: any[];
+    finalPlayedWords: PlayedWord[];
+  } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const {
@@ -61,6 +66,7 @@ const Game: React.FC = () => {
     availableRooms,
     onlinePlayers,
     currentPlayerId,
+    difficulty,
     snackbar,
     setSnackbar,
     createRoom,
@@ -76,7 +82,7 @@ const Game: React.FC = () => {
   const handleGameModeSelect = (mode: GameMode) => {
     if (mode === 'pagsabog') {
       setGameMode(mode);
-      setShowRoomList(true);
+      createRoom(); // Create room when game mode is selected
     }
   };
 
@@ -104,7 +110,6 @@ const Game: React.FC = () => {
     if (socket) {
       leaveRoom(roomId);
       setInputWord('');
-      setDifficulty('easy');
       setGameMode('pagsabog');
       setShowRoomList(true);
     }
@@ -115,15 +120,6 @@ const Game: React.FC = () => {
       setShowRoomList(true);
     }
   }, [roomId]);
-
-  // Add effect to handle difficulty updates
-  useEffect(() => {
-    if (socket) {
-      socket.on('roomSettingsUpdated', (data: { difficulty: Difficulty; newSyllable: string }) => {
-        setDifficulty(data.difficulty);
-      });
-    }
-  }, [socket]);
 
   useEffect(() => {
     if (socket) {
@@ -189,6 +185,69 @@ const Game: React.FC = () => {
       inputRef.current?.focus();
     }
   }, [currentPlayerId, socket?.id]);
+
+  // Listen for game over popup event
+  useEffect(() => {
+    const handleGameOverPopup = (event: CustomEvent) => {
+      setGameOverData(event.detail);
+      setIsGameOverDialogOpen(true);
+    };
+
+    window.addEventListener('gameOverPopup', handleGameOverPopup as EventListener);
+    
+    return () => {
+      window.removeEventListener('gameOverPopup', handleGameOverPopup as EventListener);
+    };
+  }, []);
+
+  // Debug pause command for browser console
+  useEffect(() => {
+    // Add debug commands to window object
+    (window as any).dugtunganDebug = {
+      pause: () => {
+        if (socket && roomId && isGameActive) {
+          console.log('🛑 Pausing game timer...');
+          socket.emit('debugPause', roomId);
+        } else {
+          console.log('❌ Cannot pause: No active game or room');
+        }
+      },
+      resume: () => {
+        if (socket && roomId && isGameActive) {
+          console.log('▶️ Resuming game timer...');
+          socket.emit('debugResume', roomId);
+        } else {
+          console.log('❌ Cannot resume: No active game or room');
+        }
+      },
+      status: () => {
+        console.log('🎮 Dugtungan Debug Status:');
+        console.log('- Room ID:', roomId);
+        console.log('- Game Active:', isGameActive);
+        console.log('- Current Player:', currentPlayerId);
+        console.log('- Time Left:', timeLeft);
+        console.log('- Current Syllable:', currentSyllable);
+        console.log('- Players:', players);
+        console.log('- Socket Connected:', !!socket);
+      },
+      help: () => {
+        console.log('🎮 Dugtungan Debug Commands:');
+        console.log('- dugtunganDebug.pause() - Pause the game timer');
+        console.log('- dugtunganDebug.resume() - Resume the game timer');
+        console.log('- dugtunganDebug.status() - Show current game status');
+        console.log('- dugtunganDebug.help() - Show this help message');
+      }
+    };
+
+    // Show help message when debug object is created
+    console.log('🎮 Dugtungan Debug Commands Available!');
+    console.log('Type dugtunganDebug.help() for available commands');
+
+    return () => {
+      // Clean up debug object when component unmounts
+      delete (window as any).dugtunganDebug;
+    };
+  }, [socket, roomId, isGameActive, currentPlayerId, timeLeft, currentSyllable, players]);
 
   return (
     <Container maxWidth="md" sx={{ py: 4 }}>
@@ -272,7 +331,6 @@ const Game: React.FC = () => {
                     variant="outlined"
                     onClick={() => {
                       setShowRoomList(false);
-                      createRoom();
                     }}
                   >
                     Create Room
@@ -372,7 +430,6 @@ const Game: React.FC = () => {
                     label="Difficulty"
                     onChange={(e) => {
                       const newDifficulty = e.target.value as Difficulty;
-                      setDifficulty(newDifficulty);
                       handleDifficultyChange(roomId, newDifficulty);
                     }}
                   >
@@ -457,6 +514,11 @@ const Game: React.FC = () => {
               />
               <Typography variant="body1" sx={{ mt: 1 }}>
                 Time left: {timeLeft}s
+                {timeLeft <= 3 && currentPlayerId === socket?.id && (
+                  <Typography component="span" color="error.main" sx={{ ml: 1, fontWeight: 'bold' }}>
+                    ⚠️ You'll lose a heart!
+                  </Typography>
+                )}
               </Typography>
               {currentPlayerId && (
                 <Typography
@@ -506,7 +568,23 @@ const Game: React.FC = () => {
                         />
                       )}
                     </Box>
-                    <Typography>Score: {player.score}</Typography>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                      <Typography>Score: {player.score}</Typography>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                        {[...Array(3)].map((_, index) => (
+                          <Typography
+                            key={index}
+                            sx={{
+                              color: index < (player.hearts || 0) ? 'error.main' : 'grey.400',
+                              fontSize: '1.2rem',
+                              fontWeight: 'bold'
+                            }}
+                          >
+                            ♥
+                          </Typography>
+                        ))}
+                      </Box>
+                    </Box>
                   </Box>
                 ))}
               </Box>
@@ -662,6 +740,20 @@ const Game: React.FC = () => {
                             Score: {player.score}
                           </Typography>
                         )}
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                          {[...Array(3)].map((_, index) => (
+                            <Typography
+                              key={index}
+                              sx={{
+                                color: index < (player.hearts || 0) ? 'error.main' : 'grey.400',
+                                fontSize: '1rem',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              ♥
+                            </Typography>
+                          ))}
+                        </Box>
                       </Box>
                     }
                   />
@@ -714,10 +806,184 @@ const Game: React.FC = () => {
         <Alert
           onClose={() => setSnackbar({ ...snackbar, open: false })}
           severity={snackbar.severity}
+          sx={{
+            ...(snackbar.severity === 'warning' && {
+              backgroundColor: '#fff3cd',
+              color: '#856404',
+              border: '1px solid #ffeaa7'
+            })
+          }}
         >
           {snackbar.message}
         </Alert>
       </Snackbar>
+
+      {/* Game Over Dialog */}
+      <Dialog 
+        open={isGameOverDialogOpen} 
+        onClose={() => setIsGameOverDialogOpen(false)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle sx={{ textAlign: 'center', pb: 1 }}>
+          <Typography variant="h4" component="div" gutterBottom>
+            🎮 Game Over! 🎮
+          </Typography>
+          {gameOverData?.winner ? (
+            <Typography variant="h6" color="success.main" sx={{ fontWeight: 'bold' }}>
+              🏆 {gameOverData.winner.name} Wins! 🏆
+            </Typography>
+          ) : (
+            <Typography variant="h6" color="error.main" sx={{ fontWeight: 'bold' }}>
+              💥 All Players Eliminated! 💥
+            </Typography>
+          )}
+        </DialogTitle>
+        
+        <DialogContent>
+          <Stack spacing={3}>
+            {/* Final Scores */}
+            <Paper sx={{ p: 2, bgcolor: 'primary.light', color: 'primary.contrastText' }}>
+              <Typography variant="h6" gutterBottom>
+                📊 Final Scores
+              </Typography>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                {gameOverData?.players
+                  .sort((a, b) => b.score - a.score) // Sort by score descending
+                  .map((player, index) => (
+                    <Box
+                      key={player.id}
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        p: 1,
+                        bgcolor: 'rgba(255,255,255,0.1)',
+                        borderRadius: 1,
+                        ...(player.id === gameOverData?.winner?.id && {
+                          bgcolor: 'rgba(255,215,0,0.3)',
+                          border: '2px solid gold'
+                        })
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                        <Typography variant="h6" sx={{ minWidth: '30px' }}>
+                          {index + 1 === 1 ? '🥇' : index + 1 === 2 ? '🥈' : index + 1 === 3 ? '🥉' : `${index + 1}.`}
+                        </Typography>
+                        <Typography variant="body1" sx={{ fontWeight: 'bold' }}>
+                          {player.name}
+                        </Typography>
+                        {player.id === gameOverData?.winner?.id && (
+                          <Box sx={{ display: { xs: 'none', sm: 'block' } }}>
+                            <Typography variant="caption" sx={{ bgcolor: 'gold', color: 'black', px: 1, py: 0.5, borderRadius: 1 }}>
+                              WINNER
+                            </Typography>
+                          </Box>
+                        )}
+                      </Box>
+                      <Typography variant="body1" sx={{ fontWeight: 'bold' }}>
+                        {player.score} points
+                      </Typography>
+                    </Box>
+                  ))}
+              </Box>
+            </Paper>
+
+            {/* Game Statistics */}
+            <Paper sx={{ p: 2, bgcolor: 'grey.50' }}>
+              <Typography variant="h6" gutterBottom>
+                📈 Game Statistics
+              </Typography>
+              <Box sx={{ display: 'flex', justifyContent: 'space-around', textAlign: 'center' }}>
+                <Box>
+                  <Typography variant="h4" color="primary.main" sx={{ fontWeight: 'bold', fontSize: { xs: '1.5rem', sm: '2rem' } }}>
+                    {gameOverData?.finalPlayedWords?.length || 0}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ fontSize: { xs: '0.7rem', sm: '1rem' } }}>
+                    Words Played
+                  </Typography>
+                </Box>
+                <Box>
+                  <Typography variant="h4" color="secondary.main" sx={{ fontWeight: 'bold', fontSize: { xs: '1.5rem', sm: '2rem' } }}>
+                    {gameOverData?.players?.length || 0}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ fontSize: { xs: '0.7rem', sm: '1rem' } }}>
+                    Players
+                  </Typography>
+                </Box>
+                <Box>
+                  <Typography variant="h4" color="success.main" sx={{ fontWeight: 'bold', fontSize: { xs: '1.5rem', sm: '2rem' } }}>
+                    {gameOverData?.winner?.score || 0}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ fontSize: { xs: '0.7rem', sm: '1rem' } }}>
+                    Winning Score
+                  </Typography>
+                </Box>
+              </Box>
+            </Paper>
+
+            {/* Words Played */}
+            <Paper sx={{ p: 2 }}>
+              <Typography variant="h6" gutterBottom>
+                📝 Words Played ({gameOverData?.finalPlayedWords?.length || 0})
+              </Typography>
+              <Box sx={{ maxHeight: '300px', overflow: 'auto' }}>
+                {gameOverData?.finalPlayedWords && gameOverData.finalPlayedWords.length > 0 ? (
+                  <Stack spacing={1}>
+                    {gameOverData.finalPlayedWords.map((wordInfo, index) => (
+                      <Box
+                        key={index}
+                        sx={{
+                          p: 1,
+                          border: '1px solid #e0e0e0',
+                          borderRadius: 1,
+                          bgcolor: 'background.paper'
+                        }}
+                      >
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                          <Typography variant="body2" color="text.secondary">
+                            {wordInfo.playedBy}
+                          </Typography>
+                          <Typography variant="body2" color="primary.main" sx={{ fontWeight: 'bold' }}>
+                            {wordInfo.word}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            (syllable: {wordInfo.currentSyllable})
+                          </Typography>
+                        </Box>
+                        {wordInfo.definitions && wordInfo.definitions.length > 0 && (
+                          <Typography variant="caption" color="text.secondary">
+                            {wordInfo.definitions[0]?.pos} • {wordInfo.definitions[0]?.definition[0]}
+                          </Typography>
+                        )}
+                      </Box>
+                    ))}
+                  </Stack>
+                ) : (
+                  <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 2 }}>
+                    No words were played in this game.
+                  </Typography>
+                )}
+              </Box>
+            </Paper>
+          </Stack>
+        </DialogContent>
+        
+        <DialogActions sx={{ p: 3, justifyContent: 'center' }}>
+          <Button
+            variant="contained"
+            color="primary"
+            onClick={() => {
+              setIsGameOverDialogOpen(false);
+              setGameOverData(null);
+              // Optionally reset game state or redirect to lobby
+            }}
+            size="large"
+          >
+            Back to Lobby
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Container>
   );
 };

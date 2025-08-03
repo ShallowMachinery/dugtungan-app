@@ -82,13 +82,31 @@ function moveToNextTurn(room: GameRoom) {
     return;
   }
   
-  // Move to next player
-  const playerIds = Array.from(room.players.keys());
-  console.log('All players:', playerIds);
+  // Get only active players (those with hearts > 0)
+  const activePlayerIds = Array.from(room.players.entries())
+    .filter(([_, player]) => player.hearts > 0)
+    .map(([id, _]) => id);
   
-  const currentIndex = playerIds.indexOf(room.currentPlayerId!);
-  const nextIndex = (currentIndex + 1) % playerIds.length;
-  room.currentPlayerId = playerIds[nextIndex];
+  console.log('Active players:', activePlayerIds);
+  
+  if (activePlayerIds.length === 0) {
+    console.log('No active players remaining');
+    return;
+  }
+  
+  // Find next player from active players
+  let nextPlayerId: string;
+  if (!room.currentPlayerId || !activePlayerIds.includes(room.currentPlayerId)) {
+    // If current player is eliminated or not set, start with first active player
+    nextPlayerId = activePlayerIds[0];
+  } else {
+    // Move to next active player
+    const currentIndex = activePlayerIds.indexOf(room.currentPlayerId);
+    const nextIndex = (currentIndex + 1) % activePlayerIds.length;
+    nextPlayerId = activePlayerIds[nextIndex];
+  }
+  
+  room.currentPlayerId = nextPlayerId;
   console.log('Next turn set to:', room.currentPlayerId);
   
   // Reset timer and generate new syllable
@@ -164,6 +182,66 @@ function startGameTimer(room: GameRoom) {
     
     if (room.timeLeft <= 0) {
       console.log('Time\'s up for player:', room.currentPlayerId);
+      
+      // Deduct a heart from the current player
+      const currentPlayer = room.players.get(room.currentPlayerId!);
+      if (currentPlayer) {
+        currentPlayer.hearts -= 1;
+        console.log(`${currentPlayer.name} lost a heart! Hearts remaining: ${currentPlayer.hearts}`);
+        
+        // Update online player hearts as well
+        if (onlinePlayers.has(room.currentPlayerId!)) {
+          onlinePlayers.get(room.currentPlayerId!)!.hearts = currentPlayer.hearts;
+        }
+        
+        // Notify all players about heart loss
+        io.to(room.id).emit('heartLost', {
+          playerId: room.currentPlayerId,
+          playerName: currentPlayer.name,
+          heartsRemaining: currentPlayer.hearts,
+          reason: 'timeout'
+        });
+        
+        // Update all remaining players with the new player list
+        io.to(room.id).emit('playerJoined', Array.from(room.players.values()).map(player => ({
+          ...player,
+          isOwner: player.id === room.ownerId
+        })));
+        
+        // Check if player is eliminated
+        if (currentPlayer.hearts <= 0) {
+          console.log(`${currentPlayer.name} is eliminated!`);
+          io.to(room.id).emit('playerEliminated', {
+            playerId: room.currentPlayerId,
+            playerName: currentPlayer.name
+          });
+          
+          // Remove eliminated player from active players but keep in all players
+          room.players.delete(room.currentPlayerId!);
+          
+          // Update all remaining players with the new player list
+          io.to(room.id).emit('playerJoined', Array.from(room.players.values()).map(player => ({
+            ...player,
+            isOwner: player.id === room.ownerId
+          })));
+          
+          // Check if game is over (only one player remaining or no players)
+          if (room.players.size <= 1) {
+            console.log('Game over!');
+            const winner = room.players.size === 1 ? Array.from(room.players.values())[0] : null;
+            io.to(room.id).emit('gameOver', {
+              winner: winner ? { id: winner.id, name: winner.name, score: winner.score } : null,
+              players: Array.from(room.allPlayers.values()), // Use all players for game over screen
+              finalPlayedWords: room.playedWords
+            });
+            
+            // End the room
+            endRoom(room.id);
+            return;
+          }
+        }
+      }
+      
       moveToNextTurn(room);
     } else {
       // Just update the time
@@ -198,6 +276,7 @@ io.on('connection', (socket) => {
       id: socket.id,
       name: name,
       score: 0,
+      hearts: 3, // Initialize with 3 hearts
       isInGame: false
     };
 
@@ -220,6 +299,7 @@ io.on('connection', (socket) => {
         id: roomId,
         ownerId: socket.id,
         players: new Map([[socket.id, owner]]),
+        allPlayers: new Map([[socket.id, owner]]), // Track all players including eliminated ones
         currentSyllable: '',
         timeLeft: 30,
         isActive: false,
@@ -280,11 +360,20 @@ io.on('connection', (socket) => {
         console.log('Adding player to room:', player.name);
         player.currentRoomId = roomId;
         room.players.set(socket.id, player);
+        room.allPlayers.set(socket.id, player); // Add to all players list
         console.log('\n=== Room Players After Join ===');
         console.log('Room ID:', roomId);
         console.log('Current players:', Array.from(room.players.values()).map(p => ({ id: p.id, name: p.name })));
+        console.log('All players:', Array.from(room.allPlayers.values()).map(p => ({ id: p.id, name: p.name })));
         socket.join(roomId);
         socket.emit('roomCreated', { roomId, isOwner: false });
+        
+        // Send room settings to the joining player
+        socket.emit('roomSettingsUpdated', {
+          difficulty: room.difficulty,
+          newSyllable: room.currentSyllable
+        });
+        
         io.to(roomId).emit('playerJoined', Array.from(room.players.values()).map(player => ({
           ...player,
           isOwner: player.id === room.ownerId
@@ -393,20 +482,8 @@ io.on('connection', (socket) => {
             console.log('Updated online player score:', onlinePlayers.get(socket.id)!.score);
           }
           
-          // Move to next player
-          const playerIds = Array.from(room.players.keys());
-          console.log('\n=== Moving to Next Turn ===');
-          console.log('Current player:', socket.id);
-          console.log('All players:', playerIds);
-          
-          const currentIndex = playerIds.indexOf(socket.id);
-          const nextIndex = (currentIndex + 1) % playerIds.length;
-          room.currentPlayerId = playerIds[nextIndex];
-          console.log('Next turn set to:', room.currentPlayerId);
-          
-          // Reset timer and generate new syllable
-          room.timeLeft = Math.floor(Math.random() * 6) + 5;
-          generateNewSyllable(room);
+          // Move to next player using the updated function
+          moveToNextTurn(room);
           
           io.to(roomId).emit('wordAccepted', {
             playerId: socket.id,
@@ -425,9 +502,71 @@ io.on('connection', (socket) => {
           startGameTimer(room);
         } else {
           console.log('Word rejected:', validation.message);
-          socket.emit('wordRejected', {
-            message: validation.message
+          
+          // Deduct a heart for invalid word submission
+          player.hearts -= 1;
+          console.log(`${player.name} lost a heart for invalid word! Hearts remaining: ${player.hearts}`);
+          
+          // Update online player hearts as well
+          if (onlinePlayers.has(socket.id)) {
+            onlinePlayers.get(socket.id)!.hearts = player.hearts;
+          }
+          
+          // Notify all players about heart loss
+          io.to(roomId).emit('heartLost', {
+            playerId: socket.id,
+            playerName: player.name,
+            heartsRemaining: player.hearts,
+            reason: 'invalid_word'
           });
+          
+          // Update all players with the new heart count
+          io.to(roomId).emit('playerJoined', Array.from(room.players.values()).map(player => ({
+            ...player,
+            isOwner: player.id === room.ownerId
+          })));
+          
+          // Check if player is eliminated
+          if (player.hearts <= 0) {
+            console.log(`${player.name} is eliminated!`);
+            io.to(roomId).emit('playerEliminated', {
+              playerId: socket.id,
+              playerName: player.name
+            });
+            
+            // Remove eliminated player from active players but keep in all players
+            room.players.delete(socket.id);
+            
+            // Update all remaining players with the new player list
+            io.to(roomId).emit('playerJoined', Array.from(room.players.values()).map(player => ({
+              ...player,
+              isOwner: player.id === room.ownerId
+            })));
+            
+            // Check if game is over (only one player remaining or no players)
+            if (room.players.size <= 1) {
+              console.log('Game over!');
+              const winner = room.players.size === 1 ? Array.from(room.players.values())[0] : null;
+              io.to(roomId).emit('gameOver', {
+                winner: winner ? { id: winner.id, name: winner.name, score: winner.score } : null,
+                players: Array.from(room.allPlayers.values()), // Use all players for game over screen
+                finalPlayedWords: room.playedWords
+              });
+              
+              // End the room
+              endRoom(roomId);
+              return;
+            }
+          }
+          
+          socket.emit('wordRejected', {
+            message: validation.message,
+            heartsLost: 1,
+            heartsRemaining: player.hearts
+          });
+          
+          // Move to next turn after invalid word
+          moveToNextTurn(room);
         }
       } else {
         console.log('Player not found in room');
@@ -479,6 +618,56 @@ io.on('connection', (socket) => {
       io.emit('onlinePlayersUpdate', Array.from(onlinePlayers.values()));
     } else {
       console.log('Room not found or user is not owner');
+    }
+  });
+
+  // Debug commands for development
+  socket.on('debugPause', (roomId: string) => {
+    console.log('\n=== Debug Pause Request ===');
+    console.log('Room ID:', roomId);
+    console.log('Requested by Socket ID:', socket.id);
+
+    const room = rooms.get(roomId);
+    if (room && room.isActive) {
+      console.log('Pausing game timer');
+      
+      // Clear the current timer
+      if (room.timer) {
+        clearInterval(room.timer);
+        room.timer = null;
+        console.log('Timer paused successfully');
+        
+        // Notify all players that the game is paused
+        io.to(roomId).emit('gamePaused', {
+          pausedBy: onlinePlayers.get(socket.id)?.name || 'Debug'
+        });
+      } else {
+        console.log('No active timer to pause');
+      }
+    } else {
+      console.log('Room not found or game not active');
+    }
+  });
+
+  socket.on('debugResume', (roomId: string) => {
+    console.log('\n=== Debug Resume Request ===');
+    console.log('Room ID:', roomId);
+    console.log('Requested by Socket ID:', socket.id);
+
+    const room = rooms.get(roomId);
+    if (room && room.isActive) {
+      console.log('Resuming game timer');
+      
+      // Start the timer again
+      startGameTimer(room);
+      console.log('Timer resumed successfully');
+      
+      // Notify all players that the game has resumed
+      io.to(roomId).emit('gameResumed', {
+        resumedBy: onlinePlayers.get(socket.id)?.name || 'Debug'
+      });
+    } else {
+      console.log('Room not found or game not active');
     }
   });
 
@@ -553,6 +742,7 @@ io.on('connection', (socket) => {
       console.log('Current players:', Array.from(room.players.values()).map(p => ({ id: p.id, name: p.name })));
       
       room.players.delete(socket.id);
+      room.allPlayers.delete(socket.id); // Also remove from all players list
       socket.leave(roomId);
       
       console.log('\n=== Room Players After Leave ===');
@@ -620,6 +810,7 @@ io.on('connection', (socket) => {
       if (room.players.has(socket.id)) {
         console.log('Player was in room:', roomId);
         room.players.delete(socket.id);
+        room.allPlayers.delete(socket.id); // Also remove from all players list
 
         if (room.players.size === 0) {
           console.log('Room is empty, removing room:', roomId);

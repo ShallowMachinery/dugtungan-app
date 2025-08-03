@@ -19,7 +19,8 @@ export interface PlayedWord {
 export interface GameRoom {
   id: string;
   ownerId: string;
-  players: Map<string, Player>;
+  players: Map<string, Player>; // Active players (hearts > 0)
+  allPlayers: Map<string, Player>; // All players who participated (including eliminated)
   currentSyllable: string;
   timeLeft: number;
   isActive: boolean;
@@ -33,6 +34,7 @@ export interface Player {
   id: string;
   name: string;
   score: number;
+  hearts: number; // Number of lives remaining (starts with 3)
   isInGame?: boolean;
   currentRoomId?: string;
 }
